@@ -493,7 +493,7 @@ function queueSheet() {
 
 /* ============================================================ chart viewer (PDF + images) */
 const viewer = $('#viewer');
-const V = { file: null, blob: null, zoom: 1, token: 0, doc: null, pages: null, imgUrl: null, lock: null, io: null };
+const V = { single: false, file: null, blob: null, zoom: 1, token: 0, doc: null, pages: null, imgUrl: null, lock: null, io: null };
 const ZOOMS = [1, 1.5, 2, 3];
 let pdfjsP;
 function loadPdfjs() {
@@ -513,6 +513,7 @@ async function openChart(fid) {
     <button data-act="zoom-out" aria-label="Zoom out">${ic('zoomout')}</button><span class="zoomtxt" id="ztxt">100%</span><button data-act="zoom-in" aria-label="Zoom in">${ic('zoomin')}</button></div>
     <div class="vbody" id="vbody"><div class="vpages" id="vpages"><div class="vmsg">Loading…</div></div></div>
     <div class="vauto" id="vauto">
+      <div class="asnote" id="asnote">One page, so auto scroll is off</div>
       <div class="vrow"><button class="asbtn" id="asbtn" data-act="as-toggle"></button>
         <div class="asseg"><button data-act="as-mode" data-m="sync">Sync</button><button data-act="as-mode" data-m="manual">Manual</button></div></div>
       <div class="vrow"><span class="aslbl" id="aslbl"></span><input type="range" id="asrange" aria-label="Auto scroll speed"></div>
@@ -535,6 +536,7 @@ async function drawChart() {
         for (let n = 1; n <= V.doc.numPages; n++) V.pages.push(await V.doc.getPage(n));
       }
       if (tok !== V.token) return;
+      asSingle(V.pages.length === 1);
       V.io?.disconnect();
       pagesEl.innerHTML = '';
       const dpr = Math.min(window.devicePixelRatio || 1, 2.5);
@@ -547,6 +549,7 @@ async function drawChart() {
         c.dataset.i = i; pagesEl.append(c); V.io.observe(c);
       });
     } else {
+      asSingle(true); // a photo or image is one page
       if (!V.imgUrl) V.imgUrl = URL.createObjectURL(V.blob);
       pagesEl.innerHTML = `<img src="${V.imgUrl}" alt="" style="width:${cssW}px">`;
     }
@@ -587,6 +590,7 @@ function asUI() {
   $('#asbtn').classList.toggle('on', AS.on);
 }
 async function asStart() {
+  if (V.single) return;
   if (AS.mode === 'sync' && !asSyncable()) { AS.mode = 'manual'; toast('No MP3 on this song, using manual speed'); }
   if (AS.mode === 'sync') {
     const ids = audioOf(V.file.songId).map((f) => f.id);
@@ -596,6 +600,11 @@ async function asStart() {
   const b = asBody(); if (!b) return;
   AS.on = true; AS.offset = 0; AS.last = 0; AS.pos = AS.setTop = b.scrollTop; asUI();
   cancelAnimationFrame(AS.raf); AS.raf = requestAnimationFrame(asFrame);
+}
+function asSingle(single) { // one-page charts never need auto scroll: hide the controls and say why
+  V.single = single;
+  if (single) asStop();
+  $('#vauto')?.classList.toggle('single', single);
 }
 function asStop() { AS.on = false; cancelAnimationFrame(AS.raf); AS.raf = 0; if ($('#asbtn')) asUI(); }
 function asFrame(ts) {
@@ -796,6 +805,15 @@ function mimeFor(file, kind) {
   return kind === 'audio' ? 'audio/mpeg' : 'application/octet-stream';
 }
 const quotaMsg = (e, name) => (e?.name === 'QuotaExceededError' ? `${name}: out of storage` : `${name}: ${e?.message || 'unreadable'}`);
+const chartOk = (file) => /pdf/i.test(file.type || '') || /\.pdf$/i.test(file.name) || /^image\//i.test(file.type || '') || /\.(png|jpe?g|gif|webp|heic)$/i.test(file.name);
+async function storeChart(song, file, n = 0) {
+  if (!chartOk(file)) throw new Error('Charts must be PDFs or images');
+  if (filesOf(song.id).some((f) => f.kind === 'chart' && f.name === file.name && f.size === file.size)) return null; // already attached
+  const rec = { id: uid(), songId: song.id, kind: 'chart', name: file.name, label: stripExt(file.name), mime: mimeFor(file, 'chart'), size: file.size, added: Date.now() + n };
+  await DB.putFile(rec, new Blob([file], { type: rec.mime }));
+  state.files.push(rec); reindex();
+  return rec;
+}
 async function addFiles(song, kind, fileList) {
   const files = [...fileList]; if (!files.length) return;
   navigator.storage?.persist?.().catch(() => {});
@@ -832,12 +850,22 @@ function reviewImport(items) {
     sheet((el, close) => {
       el.innerHTML = `<div class="sh-title"><b>Review import</b><span>${plural(items.length, 'MP3')}</span></div>
         <div class="body"><label class="field"><span>Artist for the whole group</span><input type="text" id="ga" value="${esc(prefill)}" placeholder="${tagged.length > 1 ? 'Leave blank to keep each file’s own artist' : 'Artist or band'}" autocomplete="off"></label>
-          <div class="qlabel" style="padding:6px 0 4px;display:flex;justify-content:space-between"><span>Song</span><span style="width:64px">Key</span></div>
-          ${items.map((x, i) => `<div class="brow"><div class="bname"><div class="t">${esc(x.t.title)}</div><div class="s">${esc(x.file.name)}</div></div><input type="text" class="bk" data-i="${i}" placeholder="Key" maxlength="4" autocapitalize="characters"></div>`).join('')}</div>
+          <div class="brow brow3 bhead"><span>Song</span><span>Key</span><span>Chart</span></div>
+          ${items.map((x, i) => `<div class="brow brow3" data-row="${i}"><div class="bname"><div class="t">${esc(x.t.title)}</div><div class="s">${esc(x.file.name)}</div><div class="cs" hidden></div></div><input type="text" class="bk" data-i="${i}" placeholder="Key" maxlength="4" autocapitalize="characters"><label class="cbtn" title="Attach chart" aria-label="Attach chart">${ic('doc')}<input type="file" class="cpick" data-i="${i}" accept="application/pdf,.pdf,image/*" multiple hidden></label></div>`).join('')}</div>
         <div class="foot"><button class="btn ghost" data-r="0">Cancel</button><button class="btn" data-r="1">Import ${items.length}</button></div>`;
+      const charts = items.map(() => []);
+      el.addEventListener('change', (e) => { // chosen chart files for a song; shown under its title
+        const t = e.target; if (!t.classList?.contains('cpick')) return;
+        const i = +t.dataset.i, picked = [...t.files]; t.value = '';
+        if (!picked.length) return;
+        charts[i] = picked;
+        const row = el.querySelector(`[data-row="${i}"]`), cs = row.querySelector('.cs');
+        cs.hidden = false; cs.textContent = `Chart: ${picked.map((f) => f.name).join(', ')}`;
+        row.querySelector('.cbtn').classList.add('has');
+      });
       const fin = (ok) => {
         if (done) return; done = true; close();
-        resolve(ok ? { artist: $('#ga', el).value.trim(), keys: items.map((_, i) => (el.querySelector(`.bk[data-i="${i}"]`).value || '').trim()) } : null);
+        resolve(ok ? { artist: $('#ga', el).value.trim(), keys: items.map((_, i) => (el.querySelector(`.bk[data-i="${i}"]`).value || '').trim()), charts } : null);
       };
       el.addEventListener('click', (e) => { const b = e.target.closest('[data-r]'); if (b) fin(b.dataset.r === '1'); });
       waitClosed(el, () => { if (!done) { done = true; resolve(null); } });
@@ -875,7 +903,7 @@ async function importMp3s(fileList) {
     el.innerHTML = `<div class="sh-title"><b>Importing MP3s</b><span id="ilabel"></span></div><div class="body"><div class="bar-prog"><i id="ibar"></i></div></div>`;
     bar = $('#ibar', el); label = $('#ilabel', el);
   });
-  let added = 0, newSongs = 0;
+  let added = 0, newSongs = 0, charts = 0;
   for (let i = 0; i < items.length; i++) {
     const { file, t } = items[i];
     label.textContent = `${i + 1} of ${items.length} | ${file.name}`; bar.style.width = (i / items.length) * 100 + '%';
@@ -889,6 +917,9 @@ async function importMp3s(fileList) {
       await DB.putFile(rec, new Blob([file], { type: rec.mime }));
       if (t.cover && !state.cover.has(song.id)) { await DB.put('covers', { id: song.id, blob: t.cover }); state.cover.set(song.id, URL.createObjectURL(t.cover)); }
       state.files.push(rec); reindex(); added++;
+      for (const cf of choice.charts[i]) {
+        try { if (await storeChart(song, cf, i)) charts++; } catch (ce) { console.error('chart failed', cf.name, ce); failed.push(`${cf.name}: ${ce?.message || 'unreadable'}`); }
+      }
     } catch (e) {
       console.error('import failed', file.name, e);
       failed.push(quotaMsg(e, file.name));
@@ -897,7 +928,7 @@ async function importMp3s(fileList) {
     await new Promise((r) => setTimeout(r, 0));
   }
   bar.style.width = '100%'; closeSheet(); render(true);
-  toast([added && `${plural(added, 'MP3')} filed${newSongs ? `, ${plural(newSongs, 'new song')}` : ''}`, dups && `${dups} already here`, failed.length && `${failed.length} failed`].filter(Boolean).join(' | ') || 'Nothing added');
+  toast([added && `${plural(added, 'MP3')} filed${newSongs ? `, ${plural(newSongs, 'new song')}` : ''}`, charts && plural(charts, 'chart'), dups && `${dups} already here`, failed.length && `${failed.length} failed`].filter(Boolean).join(' | ') || 'Nothing added');
   if (failed.length) failSheet(failed);
 }
 
