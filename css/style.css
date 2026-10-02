@@ -284,3 +284,18 @@ input[type=range]::-moz-range-thumb { width: 14px; height: 14px; border: 0; bord
 .row .chartbtn { color: var(--ink); margin-right: -4px; }
 .row .chartbtn.off { color: var(--rule); }
 .row .chartbtn .i { width: 22px; height: 22px; }
+
+/* review import: attach chart */
+.brow3 { grid-template-columns: 1fr 64px 46px; }
+.brow3.bhead { font-size: 10px; letter-spacing: .2em; text-transform: uppercase; color: var(--tx2); padding: 6px 0 4px; align-items: center; }
+.brow3.bhead span:nth-child(2) { text-align: center; }
+.cbtn { width: 46px; height: 46px; border-radius: 50%; border: 1px solid var(--ink); display: grid; place-items: center; color: var(--ink); cursor: pointer; margin-bottom: 2px; }
+.cbtn .i { width: 21px; height: 21px; }
+.cbtn.has { background: var(--ink); color: var(--bg); }
+.cbtn:active { opacity: .6; }
+.brow .bname .cs { font-size: 12px; color: var(--accent); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+/* single-page charts: no auto scroll */
+#viewer .asnote { display: none; text-align: center; font-family: var(--serif); font-size: 16px; color: var(--tx2); padding: 6px 0 8px; }
+#viewer .vauto.single { padding: 4px 14px; }
+#viewer .vauto.single .vrow { display: none; }
+#viewer .vauto.single .asnote { display: block; }
