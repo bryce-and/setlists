@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover,user-scalable=no">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="SetLists">
+<meta name="theme-color" content="#09090d">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="apple-touch-icon" href="icons/icon-180.png">
+<link rel="icon" href="icons/icon-192.png">
+<link rel="stylesheet" href="css/style.css">
+<title>SetLists</title>
+</head>
+<body>
+<main id="main"></main>
+<div id="dock"><button id="homebtn" data-act="home" aria-label="Home"></button><div id="mini" hidden></div></div>
+<section id="np" aria-hidden="true"></section>
+<section id="viewer" aria-hidden="true"></section>
+<div id="overlay"></div>
+<div id="toast"></div>
+<input type="file" id="file" multiple accept="audio/mpeg,.mp3,audio/*" hidden>
+<audio id="audio" preload="auto" playsinline></audio>
+<script type="module" src="js/app.js"></script>
+</body>
+</html>
