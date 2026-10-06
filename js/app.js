@@ -237,7 +237,7 @@ function viewSetlist(id) {
   const l = state.setlists.find((x) => x.id === id); if (!l) return gone;
   const ss = setlistSongs(l), playable = ss.filter((s) => audioOf(s.id).length).length;
   return `${back}<div class="hero">${setlistArt(l, { full: true })}<h2>${esc(l.name)}</h2><div class="sub">${plural(ss.length, 'song')}${playable ? ` | ${playable} with audio` : ''}</div></div>
-    <div class="actions">${playable ? `<button class="btn" data-act="play-setlist" data-id="${id}">${ic('play')} Play</button>` : ''}<button class="btn ghost" data-act="sl-add" data-id="${id}">${ic('plus')} Add songs</button><button class="btn ghost" style="flex:0 0 52px" data-act="sl-menu" data-id="${id}" aria-label="Setlist options">${ic('dots')}</button></div>
+    <div class="actions">${playable ? `<button class="btn" data-act="play-setlist" data-id="${id}">${ic('play')} Play</button>` : ''}<button class="btn ghost" data-act="sl-add" data-id="${id}">${ic('plus')} Add songs</button><button class="btn ghost" style="flex:0 0 52px" data-act="sl-share" data-id="${id}" aria-label="Share setlist">${ic('upload')}</button><button class="btn ghost" style="flex:0 0 52px" data-act="sl-menu" data-id="${id}" aria-label="Setlist options">${ic('dots')}</button></div>
     ${ss.length ? ss.map((s, i) => songRow(s, { num: i + 1, ctx: 'sl:' + id })).join('') : `<div class="empty" style="padding-top:30px"><p>Nothing in this setlist yet.</p></div>`}`;
 }
 function renderResults() {
@@ -289,8 +289,15 @@ function actionSheet(title, sub, items) {
   const list = items.filter(Boolean);
   sheet((el, close) => {
     el.innerHTML = `<div class="sh-title"><b>${esc(title)}</b><span>${esc(sub || '')}</span></div>` +
-      list.map((it, i) => `<button class="item ${it.danger ? 'danger' : ''}" data-i="${i}">${ic(it.icon || 'dots')}${esc(it.label)}</button>`).join('');
-    el.addEventListener('click', (e) => { const b = e.target.closest('.item'); if (!b) return; close(); setTimeout(() => list[+b.dataset.i].run(), 140); });
+      list.map((it, i) => it.file
+        ? `<label class="item" data-i="${i}" data-file="1">${ic(it.icon || 'dots')}${esc(it.label)}<input type="file" hidden data-fi="${i}" accept="${esc(it.file.accept)}" ${it.file.multiple ? 'multiple' : ''}></label>`
+        : `<button class="item ${it.danger ? 'danger' : ''}" data-i="${i}">${ic(it.icon || 'dots')}${esc(it.label)}</button>`).join('');
+    el.addEventListener('click', (e) => { const b = e.target.closest('.item'); if (!b || b.dataset.file) return; close(); setTimeout(() => list[+b.dataset.i].run(), 140); });
+    el.addEventListener('change', (e) => {
+      const inp = e.target.closest('input[data-fi]'); if (!inp) return;
+      const it = list[+inp.dataset.fi], files = [...inp.files]; inp.value = ''; close();
+      if (files.length) setTimeout(() => it.file.onFiles(files), 140);
+    });
   });
 }
 function waitClosed(el, onGone) { new MutationObserver((_, o) => { if (!el.isConnected) { o.disconnect(); onGone(); } }).observe(overlay, { childList: true, subtree: true }); }
@@ -1007,6 +1014,215 @@ function playSetlist(l) {
   playList(ids);
 }
 
+/* ---------- sharing setlists ----------
+   No server: a setlist travels as a standard .zip (setlist.json + the chart/MP3 files), or as a link that carries
+   just the song list, keys and notes. The friend imports it into their own SetLists; existing songs are merged, never overwritten. */
+const CRC_T = (() => { const t = new Uint32Array(256); for (let n = 0; n < 256; n++) { let c = n; for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1; t[n] = c >>> 0; } return t; })();
+async function crcOfBlob(blob) {
+  let crc = 0xffffffff;
+  for (let o = 0; o < blob.size; o += 4 << 20) {
+    const b = new Uint8Array(await blob.slice(o, o + (4 << 20)).arrayBuffer());
+    for (let i = 0; i < b.length; i++) crc = CRC_T[(crc ^ b[i]) & 255] ^ (crc >>> 8);
+  }
+  return (crc ^ 0xffffffff) >>> 0;
+}
+async function makeZip(entries) { // store-only ZIP (files are already compressed: mp3/pdf/jpg)
+  const enc = new TextEncoder(), parts = [], central = [], d = new Date();
+  const time = (d.getHours() << 11) | (d.getMinutes() << 5) | (d.getSeconds() >> 1);
+  const date = ((d.getFullYear() - 1980) << 9) | ((d.getMonth() + 1) << 5) | d.getDate();
+  let offset = 0;
+  for (const e of entries) {
+    const name = enc.encode(e.name), size = e.blob.size, crc = await crcOfBlob(e.blob);
+    if (offset + size > 0xfffffff0) throw new Error('Bundle is too large (over 4 GB). Leave out the MP3s.');
+    const lh = new DataView(new ArrayBuffer(30));
+    lh.setUint32(0, 0x04034b50, true); lh.setUint16(4, 20, true); lh.setUint16(6, 0x0800, true); lh.setUint16(10, time, true); lh.setUint16(12, date, true);
+    lh.setUint32(14, crc, true); lh.setUint32(18, size, true); lh.setUint32(22, size, true); lh.setUint16(26, name.length, true);
+    parts.push(lh.buffer, name, e.blob);
+    const ch = new DataView(new ArrayBuffer(46));
+    ch.setUint32(0, 0x02014b50, true); ch.setUint16(4, 20, true); ch.setUint16(6, 20, true); ch.setUint16(8, 0x0800, true); ch.setUint16(12, time, true); ch.setUint16(14, date, true);
+    ch.setUint32(16, crc, true); ch.setUint32(20, size, true); ch.setUint32(24, size, true); ch.setUint16(28, name.length, true); ch.setUint32(42, offset, true);
+    central.push(ch.buffer, name);
+    offset += 30 + name.length + size;
+  }
+  const cdSize = central.reduce((n, b) => n + b.byteLength, 0), eocd = new DataView(new ArrayBuffer(22));
+  eocd.setUint32(0, 0x06054b50, true); eocd.setUint16(8, entries.length, true); eocd.setUint16(10, entries.length, true); eocd.setUint32(12, cdSize, true); eocd.setUint32(16, offset, true);
+  return new Blob([...parts, ...central, eocd.buffer], { type: 'application/zip' });
+}
+async function readZip(file) {
+  const tailLen = Math.min(file.size, 65557), tail = new DataView(await file.slice(file.size - tailLen).arrayBuffer());
+  let p = -1; for (let i = tailLen - 22; i >= 0; i--) if (tail.getUint32(i, true) === 0x06054b50) { p = i; break; }
+  if (p < 0) throw new Error('This is not a SetLists share file');
+  const count = tail.getUint16(p + 10, true), cdSize = tail.getUint32(p + 12, true), cdOff = tail.getUint32(p + 16, true);
+  const cd = new DataView(await file.slice(cdOff, cdOff + cdSize).arrayBuffer()), dec = new TextDecoder(), entries = new Map();
+  for (let i = 0, o = 0; i < count; i++) {
+    if (cd.getUint32(o, true) !== 0x02014b50) throw new Error('The share file is damaged');
+    const method = cd.getUint16(o + 10, true), csize = cd.getUint32(o + 20, true), nlen = cd.getUint16(o + 28, true);
+    entries.set(dec.decode(new Uint8Array(cd.buffer, o + 46, nlen)), { method, csize, lho: cd.getUint32(o + 42, true) });
+    o += 46 + nlen + cd.getUint16(o + 30, true) + cd.getUint16(o + 32, true);
+  }
+  return {
+    has: (n) => entries.has(n),
+    async blob(name, type = '') {
+      const e = entries.get(name); if (!e) return null;
+      const lh = new DataView(await file.slice(e.lho, e.lho + 30).arrayBuffer());
+      const start = e.lho + 30 + lh.getUint16(26, true) + lh.getUint16(28, true), raw = file.slice(start, start + e.csize);
+      if (e.method === 0) return new Blob([raw], { type });
+      if (e.method === 8 && typeof DecompressionStream !== 'undefined') return new Blob([await new Response(raw.stream().pipeThrough(new DecompressionStream('deflate-raw'))).blob()], { type });
+      throw new Error('This zip uses compression SetLists cannot read. Re-share it from the app.');
+    },
+  };
+}
+async function buildShare(l, { charts = true, audio = false } = {}) {
+  const man = { app: 'SetLists', version: 1, name: l.name, created: Date.now(), songs: [] }, entries = [];
+  let n = 0;
+  for (const s of setlistSongs(l)) {
+    const rec = { artist: artistName(s), title: s.title, key: s.key || '', bpm: s.bpm || '', notes: s.notes || '', files: [] };
+    for (const f of filesOf(s.id)) {
+      if ((f.kind === 'chart' && !charts) || (f.kind === 'audio' && !audio)) continue;
+      const blob = await DB.blob(f.id); if (!blob) continue;
+      const path = `files/${String(++n).padStart(3, '0')}-${f.name.replace(/[^\w.\- ]+/g, '_')}`;
+      entries.push({ name: path, blob });
+      rec.files.push({ kind: f.kind, name: f.name, label: f.label || '', mime: f.mime || '', size: f.size, duration: f.duration || 0, path });
+    }
+    man.songs.push(rec);
+  }
+  entries.unshift({ name: 'setlist.json', blob: new Blob([JSON.stringify(man, null, 1)], { type: 'application/json' }) });
+  return { blob: await makeZip(entries), manifest: man };
+}
+const b64url = (bytes) => { let s = ''; for (let i = 0; i < bytes.length; i += 0x8000) s += String.fromCharCode(...bytes.subarray(i, i + 0x8000)); return btoa(s).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, ''); };
+const unb64url = (str) => { const b = atob(str.replace(/-/g, '+').replace(/_/g, '/')); return Uint8Array.from(b, (c) => c.charCodeAt(0)); };
+async function shareLink(l) {
+  const json = JSON.stringify({ n: l.name, s: setlistSongs(l).map((s) => [artistName(s), s.title, s.key || '', s.bpm || '', s.notes || '']) });
+  let bytes = new TextEncoder().encode(json), tag = 'r';
+  if (typeof CompressionStream !== 'undefined') { bytes = new Uint8Array(await new Response(new Blob([bytes]).stream().pipeThrough(new CompressionStream('deflate-raw'))).arrayBuffer()); tag = 'z'; }
+  return `${location.origin}${location.pathname}#share=${tag}.${b64url(bytes)}`;
+}
+async function manifestFromHash(hash) {
+  const m = /^#share=([rz])\.([\w-]+)$/.exec(hash); if (!m) return null;
+  let bytes = unb64url(m[2]);
+  if (m[1] === 'z') bytes = new Uint8Array(await new Response(new Blob([bytes]).stream().pipeThrough(new DecompressionStream('deflate-raw'))).arrayBuffer());
+  const d = JSON.parse(new TextDecoder().decode(bytes));
+  return { name: d.n, songs: (d.s || []).map(([artist, title, key, bpm, notes]) => ({ artist, title, key, bpm, notes, files: [] })) };
+}
+// Shared data comes from someone else: keep only the fields we know, as plain strings, with sane limits.
+function cleanManifest(m) {
+  const str = (v, max = 200) => String(v ?? '').slice(0, max).trim();
+  if (!m || !Array.isArray(m.songs)) throw new Error('This is not a SetLists share');
+  return {
+    name: str(m.name, 80) || 'Shared setlist',
+    songs: m.songs.slice(0, 500).map((s) => ({
+      artist: str(s.artist, 120), title: str(s.title, 160) || 'Untitled', key: str(s.key, 8), bpm: parseInt(s.bpm, 10) || '', notes: str(s.notes, 4000),
+      files: (Array.isArray(s.files) ? s.files : []).slice(0, 50).map((f) => ({
+        kind: f.kind === 'audio' ? 'audio' : 'chart', name: str(f.name, 200) || 'file', label: str(f.label, 200), mime: str(f.mime, 100), duration: Number(f.duration) || 0, path: str(f.path, 300),
+      })),
+    })).filter((s) => s.title),
+  };
+}
+async function importShared(man, readBlob, name) {
+  let closeS, bar, label;
+  sheet((el, close) => { closeS = close; el.innerHTML = `<div class="sh-title"><b>Importing setlist</b><span id="ilabel"></span></div><div class="body"><div class="bar-prog"><i id="ibar"></i></div></div>`; bar = $('#ibar', el); label = $('#ilabel', el); });
+  const ids = [], failed = []; let newSongs = 0, files = 0;
+  for (const [i, s] of man.songs.entries()) {
+    label.textContent = `${i + 1} of ${man.songs.length} | ${s.title}`; bar.style.width = (i / man.songs.length) * 100 + '%';
+    try {
+      const a = await ensureArtist(s.artist);
+      let song = songsOf(a.id).find((x) => lc(x.title) === lc(s.title));
+      if (!song) { song = { id: uid(), artistId: a.id, title: s.title, key: s.key, bpm: s.bpm, notes: s.notes, added: Date.now() + i }; state.songs.push(song); newSongs++; }
+      else { song.key ||= s.key; song.bpm ||= s.bpm; song.notes ||= s.notes; } // fill blanks, never overwrite
+      await DB.put('songs', song); reindex();
+      if (!ids.includes(song.id)) ids.push(song.id);
+      for (const f of s.files) {
+        try {
+          const blob = readBlob && f.path ? await readBlob(f.path, f.mime) : null;
+          if (!blob) { failed.push(`${f.name}: not in the share file`); continue; }
+          if (filesOf(song.id).some((x) => x.kind === f.kind && x.name === f.name && x.size === blob.size)) continue; // already have it
+          const ok = f.kind === 'chart' ? chartOk({ name: f.name, type: f.mime }) : /audio|mpeg/i.test(f.mime) || /\.(mp3|m4a|aac|wav)$/i.test(f.name);
+          if (!ok) { failed.push(`${f.name}: not a chart or audio file`); continue; }
+          const rec = { id: uid(), songId: song.id, kind: f.kind, name: f.name, label: f.label || stripExt(f.name), mime: f.mime || mimeFor({ name: f.name, type: '' }, f.kind), size: blob.size, duration: f.duration, added: Date.now() + files };
+          await DB.putFile(rec, new Blob([blob], { type: rec.mime })); state.files.push(rec); reindex(); files++;
+        } catch (e) { console.error('shared file failed', f.name, e); failed.push(quotaMsg(e, f.name)); if (e?.name === 'QuotaExceededError') throw e; }
+      }
+    } catch (e) { console.error('shared song failed', s.title, e); failed.push(quotaMsg(e, s.title)); if (e?.name === 'QuotaExceededError') break; }
+  }
+  const taken = (n) => state.setlists.some((x) => lc(x.name) === lc(n));
+  let nm = name || man.name;
+  if (taken(nm)) { const base = nm; nm = `${base} (shared)`; for (let k = 2; taken(nm); k++) nm = `${base} (shared ${k})`; }
+  const l = { id: uid(), name: nm, songIds: ids, created: Date.now() };
+  state.setlists.push(l); await saveSetlist(l);
+  bar.style.width = '100%'; closeS();
+  toast([`Imported “${nm}”`, newSongs && plural(newSongs, 'new song'), files && plural(files, 'file')].filter(Boolean).join(' | '));
+  if (failed.length) failSheet(failed);
+  goto('setlist', l.id);
+  return l;
+}
+function previewShared(man, readBlob, source) {
+  const charts = man.songs.reduce((n, s) => n + s.files.filter((f) => f.kind === 'chart').length, 0);
+  const mp3 = man.songs.reduce((n, s) => n + s.files.filter((f) => f.kind === 'audio').length, 0);
+  sheet((el, close) => {
+    el.innerHTML = `<div class="sh-title"><b>Shared setlist</b><span>${esc(source)}</span></div>
+      <div class="body"><label class="field"><span>Save as</span><input type="text" id="shn" value="${esc(man.name)}" maxlength="80"></label>
+        <p>${[plural(man.songs.length, 'song'), charts && plural(charts, 'chart'), mp3 && `${mp3} mp3`].filter(Boolean).join(' | ')}${source === 'Link' ? '. Links carry song names, keys and notes, not files.' : ''}</p>
+        ${man.songs.slice(0, 60).map((s, i) => `<div class="brow" style="grid-template-columns:28px 1fr;align-items:center"><div class="num">${i + 1}</div><div class="bname"><div class="t">${esc(s.title)}</div><div class="s">${esc([s.artist, s.key].filter(Boolean).join(' | '))}</div></div></div>`).join('')}</div>
+      <div class="foot"><button class="btn ghost" data-r="0">Cancel</button><button class="btn" data-r="1">Import</button></div>`;
+    el.addEventListener('click', (e) => {
+      const b = e.target.closest('[data-r]'); if (!b) return;
+      const name = $('#shn', el).value.trim(); close();
+      if (b.dataset.r === '1') setTimeout(() => importShared(man, readBlob, name), 200);
+    });
+  });
+}
+async function openSharedFile(files) {
+  try {
+    const zip = await readZip(files[0]);
+    if (!zip.has('setlist.json')) throw new Error('This zip was not made by SetLists');
+    const man = cleanManifest(JSON.parse(await (await zip.blob('setlist.json')).text()));
+    previewShared(man, (path, type) => (zip.has(path) ? zip.blob(path, type) : null), files[0].name);
+  } catch (e) { console.error(e); toast(e.message || 'Could not open that file'); }
+}
+async function openSharedHash() {
+  if (!location.hash.startsWith('#share=')) return;
+  const hash = location.hash;
+  history.replaceState(null, '', location.pathname + location.search); // don't re-import on reload
+  try { const man = await manifestFromHash(hash); if (man) previewShared(cleanManifest(man), null, 'Link'); }
+  catch (e) { console.error(e); toast('That share link is damaged or incomplete'); }
+}
+const safeName = (n) => n.replace(/[\\/:*?"<>|]+/g, '-').slice(0, 60).trim() || 'Setlist';
+function shareSheet(l) {
+  const ss = setlistSongs(l), charts = ss.flatMap((s) => chartsOf(s.id)), tracks = ss.flatMap((s) => audioOf(s.id));
+  const size = (a) => a.reduce((n, f) => n + (f.size || 0), 0), opts = { charts: charts.length > 0, audio: false };
+  sheet((el, close) => {
+    const opt = (k, title, list) => `<button class="pick ${opts[k] ? 'on' : ''}" data-o="${k}" ${list.length ? '' : 'disabled style="opacity:.4"'}><span class="box">${ic('check')}</span><div class="meta"><div class="t">${title}</div><div class="s">${list.length ? `${plural(list.length, 'file')} | ${fmtBytes(size(list))}` : 'None in this setlist'}</div></div></button>`;
+    el.innerHTML = `<div class="sh-title"><b>Share setlist</b><span>${esc(l.name)} | ${plural(ss.length, 'song')}</span></div>
+      <div class="body"><p>Your friend opens this in their own SetLists app (+ menu, “Open a shared setlist”). Song names, keys and notes always go. Choose the files to include.</p></div>
+      ${opt('charts', 'Charts', charts)}${opt('audio', 'MP3s', tracks)}
+      <div class="foot" style="padding-top:18px"><button class="btn" data-s="file">${ic('upload')} Send file</button><button class="btn ghost" data-s="link">Send link</button></div>
+      <div class="body"><p style="font-size:14px">A link is small enough for a text, but it carries only names, keys and notes. Use the file to include charts or MP3s.</p></div>`;
+    el.addEventListener('click', async (e) => {
+      const p = e.target.closest('.pick[data-o]');
+      if (p && !p.disabled) { opts[p.dataset.o] = !opts[p.dataset.o]; p.classList.toggle('on', opts[p.dataset.o]); return; }
+      const b = e.target.closest('[data-s]'); if (!b) return;
+      try {
+        if (b.dataset.s === 'link') {
+          const url = await shareLink(l);
+          if (navigator.share) { try { await navigator.share({ title: `${l.name} (SetLists)`, url }); } catch (er) { if (er.name !== 'AbortError') throw er; return; } }
+          else { await navigator.clipboard.writeText(url); toast('Link copied'); }
+          close(); return;
+        }
+        b.disabled = true; b.textContent = 'Preparing…';
+        const { blob } = await buildShare(l, opts);
+        const file = new File([blob], `${safeName(l.name)} (SetLists).zip`, { type: 'application/zip' });
+        if (navigator.canShare?.({ files: [file] })) {
+          try { await navigator.share({ files: [file], title: l.name }); } catch (er) { if (er.name !== 'AbortError') throw er; }
+        } else { // desktop / unsupported: save the file instead
+          const a = document.createElement('a'); a.href = URL.createObjectURL(file); a.download = file.name; document.body.append(a); a.click(); a.remove();
+          setTimeout(() => URL.revokeObjectURL(a.href), 60000); toast(`Saved ${file.name}`);
+        }
+        close();
+      } catch (er) { console.error(er); toast(er.message || 'Could not share'); b.disabled = false; b.innerHTML = b.dataset.s === 'file' ? `${ic('upload')} Send file` : 'Send link'; }
+    });
+  });
+}
+
 /* ---------- menus ---------- */
 /* Tapping a song plays it; the queue is the rest of the list it was tapped in (setlist, artist catalog, all songs). */
 function playSongRow(id, ctx = '') {
@@ -1064,7 +1280,8 @@ function addMenu() {
     { icon: 'user', label: 'New artist', run: () => newArtist() },
     { icon: 'note', label: 'New song', run: () => songSheet(null, top?.name === 'artist' ? top.id : null) },
     { icon: 'queue', label: 'Add several songs', run: () => bulkSongsSheet(top?.name === 'artist' ? top.id : null) },
-    { icon: 'upload', label: 'Import MP3s (auto-file by tags)', run: () => fileInput.click() },
+    { icon: 'upload', label: 'Import MP3s (auto-file by tags)', file: { accept: 'audio/mpeg,.mp3,audio/*', multiple: true, onFiles: importMp3s } },
+    { icon: 'list', label: 'Open a shared setlist', file: { accept: '.zip,application/zip', multiple: false, onFiles: openSharedFile } },
     { icon: 'list', label: 'New setlist', run: async () => { const l = await newSetlist(); if (l) goto('setlist', l.id); } },
   ]);
 }
@@ -1105,10 +1322,12 @@ document.addEventListener('click', async (e) => {
     case 'zoom-out': zoomChart(-1); break;
     case 'new-setlist': { const l = await newSetlist(); if (l) goto('setlist', l.id); break; }
     case 'sl-add': pickSongsFor(getSetlist(d.id)); break;
+    case 'sl-share': shareSheet(getSetlist(d.id)); break;
     case 'play-setlist': playSetlist(getSetlist(d.id)); break;
     case 'sl-menu': {
       const l = getSetlist(d.id);
       actionSheet(l.name, plural(l.songIds.length, 'song'), [
+        { icon: 'upload', label: 'Share with a friend', run: () => shareSheet(l) },
         { icon: 'edit', label: 'Rename', run: async () => { const n = await promptSheet({ title: 'Rename setlist', value: l.name }); if (n) { l.name = n; await saveSetlist(l); render(true); } } },
         { icon: 'trash', label: 'Delete setlist', danger: true, run: async () => { if (await confirmSheet('Delete setlist?', `“${l.name}” will be deleted. Your songs stay in the library.`, 'Delete')) { await DB.del('setlists', l.id); state.setlists = state.setlists.filter((x) => x !== l); state.stack.pop(); render(); } } },
       ]); break;
@@ -1148,7 +1367,8 @@ async function boot() {
     return;
   }
   reindex(); render(); await restoreSession();
+  openSharedHash();
   if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch((e) => console.warn('SW registration failed', e));
 }
 boot();
-window.__app = { state, Q, openChart, importMp3s, addFiles };
+window.__app = { state, Q, openChart, importMp3s, addFiles, buildShare, readZip, openSharedFile, shareLink };
