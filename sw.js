@@ -1,6 +1,6 @@
 // App-shell cache so SetLists opens instantly and works offline.
 // Songs and files live in IndexedDB, not here. Bump VERSION to force clients to refresh.
-const VERSION = 'setlists-v2';
+const VERSION = 'setlists-v3';
 const SHELL = ['./', 'index.html', 'manifest.webmanifest', 'css/style.css', 'js/app.js', 'js/db.js', 'js/id3.js', 'js/vendor/pdf.min.mjs', 'js/vendor/pdf.worker.min.mjs',
   'icons/icon-180.png', 'icons/icon-192.png', 'icons/icon-512.png'];
 
